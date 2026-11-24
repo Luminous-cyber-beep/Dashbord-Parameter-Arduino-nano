@@ -16,6 +16,14 @@ function fmtCoord(value: number): string {
   return value.toFixed(6)
 }
 
+function markerInfoContent(point: LocationPoint | null, reading: SensorReading | null, altitudeOffset: number): string {
+  const source = point?.source === 'hardware' ? 'Hardware serial' : point?.source === 'manual' ? 'Pin manual' : point?.source === 'browser' ? 'Geolocation browser' : 'Pusat default Jakarta'
+  const coords = point ? `${fmtCoord(point.lat)}, ${fmtCoord(point.lng)}` : `${fmtCoord(-6.2)}, ${fmtCoord(106.816666)}`
+  const sensorAlt = reading ? `${reading.alt.toFixed(1)} m` : '-'
+  const calibratedAlt = reading ? `${(reading.alt + altitudeOffset).toFixed(1)} m` : '-'
+  return `<div style="font:13px/1.5 sans-serif;max-width:220px"><strong>Titik telemetry</strong><br/>Sumber: ${source}<br/>Koordinat: ${coords}<br/>Alt sensor: ${sensorAlt}<br/>Alt kalibrasi: ${calibratedAlt}</div>`
+}
+
 export function LocationPanel({ reading, altitudeOffset, onCalibrateAltitude }: Props) {
   const { point: browserPoint, error: geoError } = useGeolocation()
   const [manualPoint, setManualPoint] = useState<LocationPoint | null>(null)
@@ -33,6 +41,7 @@ export function LocationPanel({ reading, altitudeOffset, onCalibrateAltitude }: 
   const mapObj = useRef<google.maps.Map | null>(null)
   const markerObj = useRef<google.maps.Marker | null>(null)
   const circleObj = useRef<google.maps.Circle | null>(null)
+  const infoWindowObj = useRef<google.maps.InfoWindow | null>(null)
   const geocodeTimer = useRef<number | null>(null)
 
   const hardwarePoint = useMemo<LocationPoint | null>(() => {
@@ -64,6 +73,10 @@ export function LocationPanel({ reading, altitudeOffset, onCalibrateAltitude }: 
   const hardwarePointRef = useRef<LocationPoint | null>(null)
   useEffect(() => { hardwarePointRef.current = hardwarePoint }, [hardwarePoint])
   const initialPointRef = useRef<LocationPoint | null>(activePoint)
+  const activePointRef = useRef<LocationPoint | null>(activePoint)
+  useEffect(() => { activePointRef.current = activePoint }, [activePoint])
+  const telemetryRef = useRef({ reading, altitudeOffset })
+  useEffect(() => { telemetryRef.current = { reading, altitudeOffset } }, [reading, altitudeOffset])
   useEffect(() => {
     return onGoogleMapsAuthFailure((message) => {
       setMapsStatus('error')
@@ -109,9 +122,16 @@ export function LocationPanel({ reading, altitudeOffset, onCalibrateAltitude }: 
       if (!e.latLng || hardwarePointRef.current) return
       setManualPoint({ lat: e.latLng.lat(), lng: e.latLng.lng(), accuracy: null, source: 'manual', timestamp: Date.now() })
     })
+    const infoWindow = new google.maps.InfoWindow()
+    marker.addListener('click', () => {
+      const { reading: currentReading, altitudeOffset: currentOffset } = telemetryRef.current
+      infoWindow.setContent(markerInfoContent(activePointRef.current, currentReading, currentOffset))
+      infoWindow.open({ map, anchor: marker })
+    })
     mapObj.current = map
     markerObj.current = marker
     circleObj.current = circle
+    infoWindowObj.current = infoWindow
   }, [mapsStatus, activePoint, mapMode])
 
   useEffect(() => {
@@ -180,7 +200,7 @@ export function LocationPanel({ reading, altitudeOffset, onCalibrateAltitude }: 
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-medium text-slate-700 dark:text-slate-200">Precise Location & Telemetry Map</h2>
-          <p className="text-xs text-slate-500 dark:text-slate-400">Prioritas: hardware lat/lng → manual pin → browser geolocation; geocoding & elevasi</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400">Prioritas: hardware lat/lng → manual pin → browser geolocation; klik marker untuk detail alt; geocoding & elevasi</p>
         </div>
         <div className="flex flex-wrap gap-2">
           {(['roadmap', 'satellite', 'hybrid'] as MapMode[]).map((mode) => (
@@ -193,23 +213,28 @@ export function LocationPanel({ reading, altitudeOffset, onCalibrateAltitude }: 
 
       {mapsStatus === 'missing-key' && (
         <div className="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-          `VITE_GOOGLE_MAPS_API_KEY` belum diisi. Tambahkan key di `.env` lalu restart dev server agar peta, geocoding, dan elevasi aktif.
+          <code>VITE_GOOGLE_MAPS_API_KEY</code> belum diisi. Tambahkan key di <code>.env</code> lalu restart dev server atau redeploy agar peta, geocoding, dan elevasi aktif.
         </div>
       )}
       {mapsStatus === 'error' && (
         <div className="mb-3 rounded-xl bg-red-50 p-3 text-sm text-red-800 dark:bg-red-950/40 dark:text-red-300">
-          Gagal memuat Google Maps: {mapsError}. Cek API key, izin Maps JavaScript API, billing/kuota, atau referrer domain.
+          Gagal memuat Google Maps: {mapsError}. Cek izin Maps JavaScript API, Geocoding API, dan Elevation API, billing/kuota, atau HTTP referrer.
         </div>
       )}
       {geoError && <div className="mb-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">Geolocation browser: {geoError}</div>}
 
       <div className="grid gap-4 xl:grid-cols-[1.4fr_1fr]">
-        <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+        <div className="relative overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
           {mapsStatus === 'ready' ? (
             <div ref={mapRef} className="h-80 w-full" />
           ) : (
             <div className="flex h-80 items-center justify-center bg-slate-100 p-6 text-center text-sm text-slate-500 dark:bg-slate-950/40 dark:text-slate-400">
-              Peta akan tampil setelah Google Maps JS API siap.
+              {mapsStatus === 'loading' ? 'Memuat Google Maps JS API...' : mapsStatus === 'error' ? 'Google Maps tidak dapat dimuat. Periksa konfigurasi API key.' : 'Peta akan tampil setelah Google Maps JS API siap.'}
+            </div>
+          )}
+          {mapsStatus === 'ready' && !activePoint && (
+            <div className="pointer-events-none absolute bottom-2 left-2 rounded-md bg-white/90 px-2 py-1 text-xs text-slate-600 shadow-sm dark:bg-slate-900/90 dark:text-slate-300">
+              Pusat default Jakarta · klik peta untuk pin manual
             </div>
           )}
         </div>
@@ -224,7 +249,7 @@ export function LocationPanel({ reading, altitudeOffset, onCalibrateAltitude }: 
                 <p className="text-slate-500 dark:text-slate-400">Akurasi: {activePoint.accuracy ? `±${activePoint.accuracy.toFixed(1)} m` : 'N/A'}</p>
                 {hardwarePoint && <p className="text-xs text-slate-500 dark:text-slate-400">Lokasi hardware serial mengunci titik aktif. Pin manual tersedia bila payload lat/lng tidak dikirim.</p>}
               </div>
-            ) : <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Menunggu koordinat hardware/manual/browser.</p>}
+            ) : <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">Menunggu koordinat hardware/manual/browser. Peta menampilkan pusat default Jakarta ({fmtCoord(-6.2)}, {fmtCoord(106.816666)}).</p>}
             <div className="mt-3 flex flex-wrap gap-2">
               <button type="button" disabled={!browserPoint || Boolean(hardwarePoint)} className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs disabled:opacity-50 dark:border-slate-700" onClick={() => { if (browserPoint) setManualPoint(null) }}>
                 <Crosshair className="h-3.5 w-3.5" /> Gunakan browser

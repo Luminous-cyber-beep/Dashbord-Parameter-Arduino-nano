@@ -20,7 +20,8 @@ export interface GeocodeAddress {
 }
 
 const GOOGLE_SCRIPT_ID = 'google-maps-js'
-const AUTH_FAILURE_MESSAGE = 'Google Maps API key tidak valid, API belum diaktifkan, kuota habis, atau domain hosting belum diizinkan.'
+const REQUIRED_GOOGLE_APIS = ['Maps JavaScript API', 'Geocoding API', 'Elevation API'] as const
+const AUTH_FAILURE_MESSAGE = `Google Maps API key tidak valid, API belum diaktifkan (${REQUIRED_GOOGLE_APIS.join(', ')}), kuota habis, atau domain hosting belum diizinkan.`
 let googleMapsPromise: Promise<void> | null = null
 let authFailureMessage: string | null = null
 const authFailureListeners = new Set<(message: string) => void>()
@@ -28,6 +29,7 @@ const authFailureListeners = new Set<(message: string) => void>()
 type GoogleMapsWindow = Window & {
   google?: { maps?: unknown }
   gm_authFailure?: () => void
+  __iotMapsAuthHandler?: boolean
 }
 
 function publishAuthFailure(): void {
@@ -55,27 +57,57 @@ export function loadGoogleMapsApi(): Promise<void> {
   if (!key) return Promise.reject(new Error('MISSING_KEY'))
 
   const mapsWindow = window as GoogleMapsWindow
-  if (!mapsWindow.gm_authFailure) mapsWindow.gm_authFailure = publishAuthFailure
+  if (!mapsWindow.__iotMapsAuthHandler) {
+    const previousAuthHandler = mapsWindow.gm_authFailure
+    mapsWindow.gm_authFailure = () => {
+      previousAuthHandler?.call(mapsWindow)
+      publishAuthFailure()
+    }
+    mapsWindow.__iotMapsAuthHandler = true
+  }
 
   googleMapsPromise = new Promise<void>((resolve, reject) => {
-    const settleLoad = () => {
-      if (authFailureMessage) reject(new Error(authFailureMessage))
-      else resolve()
-    }
     const existing = document.getElementById(GOOGLE_SCRIPT_ID) as HTMLScriptElement | null
-    if (existing) {
-      existing.addEventListener('load', settleLoad, { once: true })
-      existing.addEventListener('error', () => reject(new Error('Gagal memuat Google Maps JS API')), { once: true })
+    if (existing?.dataset.mapsLoadStatus === 'error') existing.remove()
+    const script = existing ?? document.createElement('script')
+    const resetPromise = () => { queueMicrotask(() => { googleMapsPromise = null }) }
+
+    const settleLoad = () => {
+      if (authFailureMessage) {
+        resetPromise()
+        reject(new Error(authFailureMessage))
+        return
+      }
+      if (!(window as GoogleMapsWindow).google?.maps) {
+        script.dataset.mapsLoadStatus = 'error'
+        resetPromise()
+        reject(new Error('Google Maps JS API tidak menginisialisasi dengan benar'))
+        return
+      }
+      script.dataset.mapsLoadStatus = 'loaded'
+      resolve()
+    }
+
+    const settleError = () => {
+      script.dataset.mapsLoadStatus = 'error'
+      resetPromise()
+      reject(new Error('Gagal memuat Google Maps JS API'))
+    }
+
+    if (existing && existing.dataset.mapsLoadStatus !== 'error') {
+      script.addEventListener('load', settleLoad, { once: true })
+      script.addEventListener('error', settleError, { once: true })
+      if (existing.dataset.mapsLoadStatus === 'loaded') settleLoad()
       return
     }
 
-    const script = document.createElement('script')
     script.id = GOOGLE_SCRIPT_ID
     script.async = true
     script.defer = true
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly`
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&v=weekly&loading=async`
+    script.dataset.mapsLoadStatus = 'loading'
     script.onload = settleLoad
-    script.onerror = () => reject(new Error('Gagal memuat Google Maps JS API'))
+    script.onerror = settleError
     document.head.appendChild(script)
   })
 
@@ -90,7 +122,7 @@ export async function reverseGeocode(point: Pick<LocationPoint, 'lat' | 'lng'>):
   await loadGoogleMapsApi()
   const geocoder = new google.maps.Geocoder()
   const response = await geocoder.geocode({ location: { lat: point.lat, lng: point.lng } })
-  const result = response.results[0]
+  const result = response.results?.[0]
   const components = result?.address_components ?? []
   const streetNumber = component(components, 'street_number')
   const route = component(components, 'route')

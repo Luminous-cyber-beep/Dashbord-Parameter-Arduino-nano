@@ -8,7 +8,6 @@ import { ConnectionBar } from './components/ConnectionBar'
 import { ExportButton } from './components/ExportButton'
 import { HardwareErrorBanner } from './components/HardwareErrorBanner'
 import { KpiGrid } from './components/KpiGrid'
-import { LocationPanel } from './components/LocationPanel'
 import { RawSerialDrawer } from './components/RawSerialDrawer'
 import { ThresholdAlertStrip } from './components/ThresholdAlertStrip'
 import { ThresholdSettings } from './components/ThresholdSettings'
@@ -44,7 +43,6 @@ export default function App() {
   const [alarmThresholdC, setAlarmThresholdC] = useState(35)
   const [alarmVolume, setAlarmVolume] = useState(0.8)
   const [alarmMuted, setAlarmMuted] = useState(false)
-  const [altitudeOffset, setAltitudeOffset] = useState(0)
   const simScenario = useMemo(() => getSimScenario(), [])
   const now = useNow(1000)
   const { theme, toggleTheme } = useTheme()
@@ -175,11 +173,9 @@ export default function App() {
           <KpiGrid state={state} now={now} thresholds={thresholds} />
 
           <section className="grid gap-4 xl:grid-cols-2">
-            <VirtualLcd reading={state.latest} altitudeOffset={altitudeOffset} />
-            <AltimeterHud reading={state.latest} altitudeOffset={altitudeOffset} />
+            <VirtualLcd reading={state.latest} />
+            <AltimeterHud reading={state.latest} />
           </section>
-
-          <LocationPanel reading={state.latest} altitudeOffset={altitudeOffset} onCalibrateAltitude={setAltitudeOffset} />
 
           <section className="grid gap-4 xl:grid-cols-2">
             <WeatherForecastCard readings={state.sessionRows} />
